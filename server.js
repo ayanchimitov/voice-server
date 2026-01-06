@@ -20,7 +20,6 @@ app.use(cors());
 app.use(express.json());
 
 // Храним активных пользователей
-// userId -> socketId
 const users = new Map();
 
 // Простой healthcheck endpoint
@@ -52,14 +51,13 @@ io.on('connection', (socket) => {
     users.set(userId, socket.id);
     socket.userId = userId;
     
-    // Подтверждаем регистрацию
     socket.emit('registered', { 
       userId: userId,
       socketId: socket.id 
     });
   });
   
-  // Проверка онлайн статуса пользователя
+  // Проверка онлайн статуса
   socket.on('check-user', (targetUserId, callback) => {
     const isOnline = users.has(targetUserId);
     console.log(`Checking if ${targetUserId} is online: ${isOnline}`);
@@ -78,7 +76,6 @@ io.on('connection', (socket) => {
     const recipientSocketId = users.get(to);
     
     if (recipientSocketId) {
-      // Отправляем offer получателю
       io.to(recipientSocketId).emit('incoming-call', {
         from: from,
         offer: offer
@@ -86,7 +83,6 @@ io.on('connection', (socket) => {
       
       console.log(`Call forwarded to ${to}`);
     } else {
-      // Пользователь не в сети
       socket.emit('call-error', {
         to: to,
         error: 'User not online'
@@ -105,7 +101,6 @@ io.on('connection', (socket) => {
     const callerSocketId = users.get(to);
     
     if (callerSocketId) {
-      // Отправляем answer звонящему
       io.to(callerSocketId).emit('call-answered', {
         from: from,
         answer: answer
@@ -148,7 +143,7 @@ io.on('connection', (socket) => {
     
     if (socket.userId) {
       users.delete(socket.userId);
-      console.log(`User ${socket.userId} removed from online list`);
+      console.log(`User ${socket.userId} removed`);
     }
   });
 });
@@ -156,24 +151,15 @@ io.on('connection', (socket) => {
 // Запуск сервера
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Signaling server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, closing server...');
+  console.log('SIGTERM received');
   server.close(() => {
     console.log('Server closed');
     process.exit(0);
   });
 });
-```
-
-### .gitignore
-```
-node_modules/
-.env
-*.log
-.DS_Store
