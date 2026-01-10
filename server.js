@@ -1,9 +1,10 @@
-// server.js - Signaling Server (Improved)
+// server.js - Signaling Server + Twilio TURN credentials
 
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
+const twilio = require('twilio');
 
 const app = express();
 const server = http.createServer(app);
@@ -21,6 +22,10 @@ const io = socketIO(server, {
 app.use(cors());
 app.use(express.json());
 
+// Twilio credentials (добавь в Railway Environment Variables)
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+
 // Храним активных пользователей
 const users = new Map();
 
@@ -28,7 +33,7 @@ const users = new Map();
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok',
-    message: 'Voice Signaling Server',
+    message: 'Voice Signaling Server + Twilio TURN',
     users: users.size,
     timestamp: new Date().toISOString()
   });
@@ -41,6 +46,61 @@ app.get('/stats', (req, res) => {
     connectedSockets: io.sockets.sockets.size,
     usersList: Array.from(users.keys())
   });
+});
+
+// NEW: Endpoint для получения Twilio TURN credentials
+app.get('/turn-credentials', async (req, res) => {
+  try {
+    console.log('🔄 Generating Twilio TURN credentials...');
+    
+    // Проверяем что credentials настроены
+    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+      console.error('❌ Twilio credentials not configured');
+      return res.status(500).json({ 
+        error: 'Twilio credentials not configured',
+        fallback: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            }
+          ]
+        }
+      });
+    }
+    
+    // Создаем Twilio клиента
+    const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    
+    // Генерируем токен для TURN сервера
+    const token = await client.tokens.create();
+    
+    console.log('✅ Twilio TURN credentials generated');
+    console.log('📋 ICE servers count:', token.iceServers.length);
+    
+    res.json({
+      iceServers: token.iceServers,
+      ttl: token.ttl
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating Twilio credentials:', error);
+    
+    // Fallback на публичные TURN серверы
+    res.json({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      ]
+    });
+  }
 });
 
 // Socket.io события
@@ -178,6 +238,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Signaling server running on port ${PORT}`);
   console.log(`📡 Socket.io CORS enabled for all origins`);
+  console.log(`🔄 Twilio TURN endpoint: /turn-credentials`);
 });
 
 // Graceful shutdown
