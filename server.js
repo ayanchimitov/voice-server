@@ -1,15 +1,13 @@
-// server.js - Signaling Server + Twilio TURN credentials
+// server.js - Signaling Server with Twilio TURN
 
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
-const twilio = require('twilio');
 
 const app = express();
 const server = http.createServer(app);
 
-// Настройка Socket.io с CORS
 const io = socketIO(server, {
   cors: {
     origin: '*',
@@ -22,230 +20,315 @@ const io = socketIO(server, {
 app.use(cors());
 app.use(express.json());
 
-// Twilio credentials (добавь в Railway Environment Variables)
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-
-// Храним активных пользователей
+// Active users: userId -> { socketId, lastSeen }
 const users = new Map();
 
-// Простой healthcheck endpoint
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    message: 'Voice Signaling Server + Twilio TURN',
-    users: users.size,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Статистика
-app.get('/stats', (req, res) => {
-  res.json({
-    activeUsers: users.size,
-    connectedSockets: io.sockets.sockets.size,
-    usersList: Array.from(users.keys())
-  });
-});
-
-// NEW: Endpoint для получения Twilio TURN credentials
+// ============================================================
+// TWILIO TURN CREDENTIALS
+// ============================================================
 app.get('/turn-credentials', async (req, res) => {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  
+  if (!accountSid || !authToken) {
+    console.error('❌ Twilio credentials not configured');
+    // Return fallback public STUN servers
+    return res.json({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
+      ],
+      ttl: 86400,
+      warning: 'TURN not configured - direct connections only'
+    });
+  }
+  
   try {
-    console.log('🔄 Generating Twilio TURN credentials...');
-    
-    // Проверяем что credentials настроены
-    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-      console.error('❌ Twilio credentials not configured');
-      return res.status(500).json({ 
-        error: 'Twilio credentials not configured',
-        fallback: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            {
-              urls: 'turn:openrelay.metered.ca:80',
-              username: 'openrelayproject',
-              credential: 'openrelayproject'
-            }
-          ]
+    // Twilio Network Traversal Service API
+    const response = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Tokens.json`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64'),
+          'Content-Type': 'application/x-www-form-urlencoded'
         }
-      });
+      }
+    );
+    
+    if (!response.ok) {
+      throw new Error(`Twilio API error: ${response.status}`);
     }
     
-    // Создаем Twilio клиента
-    const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    const data = await response.json();
     
-    // Генерируем токен для TURN сервера
-    const token = await client.tokens.create();
-    
-    console.log('✅ Twilio TURN credentials generated');
-    console.log('📋 ICE servers count:', token.iceServers.length);
+    console.log('✅ Twilio TURN credentials generated, servers:', data.ice_servers?.length || 0);
     
     res.json({
-      iceServers: token.iceServers,
-      ttl: token.ttl
+      iceServers: data.ice_servers,
+      ttl: data.ttl,
+      timestamp: Date.now()
     });
     
   } catch (error) {
-    console.error('❌ Error generating Twilio credentials:', error);
+    console.error('❌ Twilio error:', error.message);
     
-    // Fallback на публичные TURN серверы
+    // Fallback to public STUN only
     res.json({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelayproject',
-          credential: 'openrelayproject'
-        }
-      ]
+        { urls: 'stun:stun2.l.google.com:19302' }
+      ],
+      ttl: 86400,
+      error: 'TURN temporarily unavailable'
     });
   }
 });
 
-// Socket.io события
-io.on('connection', (socket) => {
-  console.log('✅ New connection:', socket.id);
+// ============================================================
+// REST ENDPOINTS
+// ============================================================
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok',
+    message: 'Voice Signaling Server',
+    users: users.size,
+    timestamp: new Date().toISOString(),
+    version: '2.0.0'
+  });
+});
+
+app.get('/stats', (req, res) => {
+  res.json({
+    activeUsers: users.size,
+    connectedSockets: io.sockets.sockets.size,
+    uptime: process.uptime()
+  });
+});
+
+// Check if user is online (REST endpoint for pre-call check)
+app.get('/user/:userId/status', (req, res) => {
+  const userId = req.params.userId;
+  const user = users.get(userId);
   
-  // Регистрация пользователя
+  res.json({
+    userId: userId,
+    online: !!user,
+    lastSeen: user?.lastSeen || null
+  });
+});
+
+// ============================================================
+// SOCKET.IO EVENTS
+// ============================================================
+io.on('connection', (socket) => {
+  console.log('🔌 New connection:', socket.id);
+  
+  // Register user
   socket.on('register', (userId) => {
-    console.log(`📝 User ${userId} registered with socket ${socket.id}`);
+    if (!userId || typeof userId !== 'string') {
+      socket.emit('error', { message: 'Invalid user ID' });
+      return;
+    }
     
-    users.set(userId, socket.id);
+    // Remove old socket if exists
+    const existing = users.get(userId);
+    if (existing && existing.socketId !== socket.id) {
+      const oldSocket = io.sockets.sockets.get(existing.socketId);
+      if (oldSocket) {
+        oldSocket.emit('replaced', { message: 'Connected from another location' });
+        oldSocket.disconnect(true);
+      }
+    }
+    
+    users.set(userId, { 
+      socketId: socket.id, 
+      lastSeen: Date.now() 
+    });
     socket.userId = userId;
     
     socket.emit('registered', { 
       userId: userId,
       socketId: socket.id 
     });
+    
+    console.log(`✅ User ${userId} registered (total: ${users.size})`);
   });
   
-  // Ping для keep-alive
+  // Keep alive / heartbeat
   socket.on('ping', () => {
+    if (socket.userId) {
+      const user = users.get(socket.userId);
+      if (user) {
+        user.lastSeen = Date.now();
+      }
+    }
     socket.emit('pong');
   });
   
-  // Проверка онлайн статуса
+  // Check user online status
   socket.on('check-user', (targetUserId, callback) => {
-    const isOnline = users.has(targetUserId);
-    console.log(`🔍 Checking if ${targetUserId} is online: ${isOnline}`);
+    const user = users.get(targetUserId);
+    const isOnline = !!user;
     
-    if (callback) {
+    if (callback && typeof callback === 'function') {
       callback({ online: isOnline });
     }
   });
   
-  // Инициация звонка
+  // ============================================================
+  // CALL SIGNALING
+  // ============================================================
+  
+  // Initiate call (caller -> server -> receiver)
   socket.on('call-user', (data) => {
     const { to, from, offer } = data;
     
-    console.log(`📞 Call from ${from} to ${to}`);
-    console.log(`📋 Offer type:`, offer?.type);
+    if (!to || !from || !offer) {
+      socket.emit('call-error', { error: 'Invalid call data' });
+      return;
+    }
     
-    const recipientSocketId = users.get(to);
+    console.log(`📞 Call: ${from} -> ${to}`);
     
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('incoming-call', {
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('incoming-call', {
         from: from,
         offer: offer
       });
-      
-      console.log(`✅ Call forwarded to ${to} (socket: ${recipientSocketId})`);
+      console.log(`  ✅ Forwarded to ${to}`);
     } else {
-      socket.emit('call-error', {
-        to: to,
-        error: 'User not online'
-      });
-      
       socket.emit('user-offline', { to: to });
-      
-      console.log(`❌ User ${to} not found`);
+      console.log(`  ❌ User ${to} offline`);
     }
   });
   
-  // Ответ на звонок
+  // Answer call (receiver -> server -> caller)
   socket.on('answer-call', (data) => {
     const { to, from, answer } = data;
     
-    console.log(`📞 Answer from ${from} to ${to}`);
-    console.log(`📋 Answer type:`, answer?.type);
+    if (!to || !answer) {
+      return;
+    }
     
-    const callerSocketId = users.get(to);
+    console.log(`✅ Answer: ${from} -> ${to}`);
     
-    if (callerSocketId) {
-      io.to(callerSocketId).emit('call-answered', {
+    const caller = users.get(to);
+    
+    if (caller) {
+      io.to(caller.socketId).emit('call-answered', {
         from: from,
         answer: answer
       });
-      
-      console.log(`✅ Answer forwarded to ${to} (socket: ${callerSocketId})`);
-    } else {
-      console.log(`❌ Caller ${to} not found`);
     }
   });
   
-  // Обмен ICE candidates
+  // ICE candidate exchange
   socket.on('ice-candidate', (data) => {
     const { to, from, candidate } = data;
     
-    console.log(`🧊 ICE from ${from || socket.userId} to ${to}`);
+    if (!to || !candidate) {
+      return;
+    }
     
-    const recipientSocketId = users.get(to);
+    const recipient = users.get(to);
     
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('ice-candidate', {
+    if (recipient) {
+      io.to(recipient.socketId).emit('ice-candidate', {
         from: from || socket.userId,
         candidate: candidate
       });
-      
-      console.log(`✅ ICE forwarded to ${to}`);
-    } else {
-      console.log(`❌ User ${to} not found for ICE`);
     }
   });
   
-  // Завершение звонка
+  // End call
   socket.on('end-call', (data) => {
     const { to } = data;
     
-    console.log(`📴 End call from ${socket.userId} to ${to}`);
+    if (!to) return;
     
-    const recipientSocketId = users.get(to);
+    console.log(`📴 End call: ${socket.userId} -> ${to}`);
     
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit('call-ended', {
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('call-ended', {
         from: socket.userId
       });
-      
-      console.log(`✅ Call end forwarded to ${to}`);
     }
   });
   
-  // Отключение
-  socket.on('disconnect', () => {
-    console.log('❌ Disconnected:', socket.id);
+  // Decline call
+  socket.on('decline-call', (data) => {
+    const { to } = data;
+    
+    if (!to) return;
+    
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('call-declined', {
+        from: socket.userId
+      });
+    }
+  });
+  
+  // ============================================================
+  // DISCONNECT
+  // ============================================================
+  socket.on('disconnect', (reason) => {
+    console.log(`🔌 Disconnected: ${socket.id} (${reason})`);
     
     if (socket.userId) {
       users.delete(socket.userId);
-      console.log(`📴 User ${socket.userId} removed (active: ${users.size})`);
+      console.log(`  User ${socket.userId} removed (total: ${users.size})`);
     }
   });
 });
 
-// Запуск сервера
+// ============================================================
+// CLEANUP STALE USERS (every 5 minutes)
+// ============================================================
+setInterval(() => {
+  const now = Date.now();
+  const staleThreshold = 5 * 60 * 1000; // 5 minutes
+  
+  for (const [userId, userData] of users.entries()) {
+    if (now - userData.lastSeen > staleThreshold) {
+      const socket = io.sockets.sockets.get(userData.socketId);
+      if (!socket || !socket.connected) {
+        users.delete(userId);
+        console.log(`🧹 Cleaned stale user: ${userId}`);
+      }
+    }
+  }
+}, 5 * 60 * 1000);
+
+// ============================================================
+// START SERVER
+// ============================================================
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
   console.log(`🚀 Signaling server running on port ${PORT}`);
-  console.log(`📡 Socket.io CORS enabled for all origins`);
-  console.log(`🔄 Twilio TURN endpoint: /turn-credentials`);
+  console.log(`   Twilio configured: ${!!process.env.TWILIO_ACCOUNT_SID}`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('⚠️ SIGTERM received');
+  console.log('SIGTERM received, closing server...');
+  
+  // Notify all connected users
+  io.emit('server-shutdown', { message: 'Server restarting' });
+  
   server.close(() => {
-    console.log('✅ Server closed');
+    console.log('Server closed');
     process.exit(0);
   });
 });
