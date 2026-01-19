@@ -209,6 +209,25 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Renegotiation offer (for adding/removing video during call)
+  socket.on('renegotiate', (data) => {
+    const { to, from, offer } = data;
+    
+    if (!to || !offer) return;
+    
+    console.log(`🔄 Renegotiation: ${from} -> ${to}`);
+    
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('renegotiate', {
+        from: from,
+        offer: offer
+      });
+      console.log(`  ✅ Renegotiation forwarded to ${to}`);
+    }
+  });
+  
   // Answer call (receiver -> server -> caller)
   socket.on('answer-call', (data) => {
     const { to, from, answer } = data;
