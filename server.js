@@ -299,6 +299,77 @@ io.on('connection', (socket) => {
   });
   
   // ============================================================
+  // CHAT MESSAGING
+  // ============================================================
+  
+  // Send chat message
+  socket.on('chat-message', (data) => {
+    const { to, from, message, messageId, timestamp } = data;
+    
+    if (!to || !message) return;
+    
+    console.log(`💬 Message: ${from} -> ${to}`);
+    
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('chat-message', {
+        from: from,
+        message: message,
+        messageId: messageId,
+        timestamp: timestamp
+      });
+      
+      // Confirm delivery
+      socket.emit('message-delivered', {
+        to: to,
+        messageId: messageId
+      });
+      console.log(`  ✅ Message delivered to ${to}`);
+    } else {
+      // User offline - notify sender
+      socket.emit('message-pending', {
+        to: to,
+        messageId: messageId,
+        reason: 'User offline'
+      });
+      console.log(`  ⏳ User ${to} offline, message pending`);
+    }
+  });
+  
+  // Typing indicator
+  socket.on('typing', (data) => {
+    const { to, from, isTyping } = data;
+    
+    if (!to) return;
+    
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('typing', {
+        from: from,
+        isTyping: isTyping
+      });
+    }
+  });
+  
+  // Message read receipt
+  socket.on('message-read', (data) => {
+    const { to, from, messageIds } = data;
+    
+    if (!to || !messageIds) return;
+    
+    const recipient = users.get(to);
+    
+    if (recipient) {
+      io.to(recipient.socketId).emit('message-read', {
+        from: from,
+        messageIds: messageIds
+      });
+    }
+  });
+  
+  // ============================================================
   // DISCONNECT
   // ============================================================
   socket.on('disconnect', (reason) => {
