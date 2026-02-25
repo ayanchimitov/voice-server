@@ -122,6 +122,26 @@ app.get('/user/:userId/status', (req, res) => {
   });
 });
 
+// Check status of multiple users
+app.post('/users/status', (req, res) => {
+  const { userIds } = req.body;
+  
+  if (!Array.isArray(userIds)) {
+    return res.status(400).json({ error: 'userIds must be an array' });
+  }
+  
+  const statuses = {};
+  userIds.forEach(userId => {
+    const user = users.get(userId);
+    statuses[userId] = {
+      online: !!user,
+      lastSeen: user?.lastSeen || null
+    };
+  });
+  
+  res.json(statuses);
+});
+
 // ============================================================
 // SOCKET.IO EVENTS
 // ============================================================
@@ -178,6 +198,22 @@ io.on('connection', (socket) => {
     if (callback && typeof callback === 'function') {
       callback({ online: isOnline });
     }
+  });
+  
+  // Check multiple users online status
+  socket.on('check-users-status', (userIds) => {
+    if (!Array.isArray(userIds)) return;
+    
+    const statuses = {};
+    userIds.forEach(userId => {
+      const user = users.get(userId);
+      statuses[userId] = {
+        online: !!user,
+        lastSeen: user?.lastSeen || null
+      };
+    });
+    
+    socket.emit('users-status', statuses);
   });
   
   // ============================================================
