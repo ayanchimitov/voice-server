@@ -213,6 +213,7 @@ io.on('connection', (socket) => {
       };
     });
     
+    console.log('👥 Sending status for', Object.keys(statuses).length, 'users:', statuses);
     socket.emit('users-status', statuses);
   });
   
