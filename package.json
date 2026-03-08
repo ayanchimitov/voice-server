@@ -1,7 +1,7 @@
 {
   "name": "voice-signaling-server",
-  "version": "2.0.0",
-  "description": "Signaling server for Browser Audio Caller with Twilio TURN",
+  "version": "3.0.0",
+  "description": "Signaling server for Browser Caller + Mobile App with APNs support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,7 +10,8 @@
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "@parse/node-apn": "^6.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
